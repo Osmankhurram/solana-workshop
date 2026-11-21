@@ -1,0 +1,281 @@
+<!doctype html>
+<!--
+  SOLANA WRAPPED: "Spotify Wrapped", but for a Solana wallet.
+
+  In plain words:
+    1. You paste a wallet address.
+    2. We ask the Solana blockchain: "what has this wallet done?" (read-only, no wallet connect, no money)
+    3. We count things up (how many transactions, busiest day, favorite hour, favorite app...)
+    4. We show the results as tap-through story slides, ending with a "personality".
+
+  Tech: one HTML file + @solana/kit (the repo's Solana library) loaded from a CDN.
+  Run it:  npx serve app/wrapped   then open the printed localhost URL.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Solana Wrapped</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px;
+         background: #07070d; color: #fff; font-family: system-ui, -apple-system, Segoe UI, sans-serif; }
+  .stage { position: relative; width: min(420px, 100%); aspect-ratio: 9 / 16; max-height: calc(100vh - 32px);
+           border-radius: 28px; overflow: hidden; box-shadow: 0 30px 80px #000a; background: #14141f; }
+  .slide { position: absolute; inset: 0; padding: 64px 28px 32px; display: flex; flex-direction: column;
+           justify-content: center; gap: 14px; opacity: 0; pointer-events: none; transition: opacity .45s; }
+  .slide.on { opacity: 1; pointer-events: auto; }
+  .bars { position: absolute; top: 16px; left: 16px; right: 16px; display: flex; gap: 4px; z-index: 2; }
+  .bars i { flex: 1; height: 4px; border-radius: 2px; background: #fff4; }
+  .bars i.done { background: #fff; }
+  .kicker { font-size: 18px; opacity: .85; margin: 0; }
+  .big { font-size: clamp(44px, 15vw, 76px); font-weight: 900; line-height: 1; margin: 0; letter-spacing: -1px; word-break: break-word; }
+  .sub { font-size: 17px; opacity: .9; margin: 0; }
+  .hint { position: absolute; bottom: 18px; left: 0; right: 0; text-align: center; font-size: 13px; opacity: .6; }
+  .chart { display: flex; align-items: flex-end; gap: 3px; height: 120px; margin-top: 8px; }
+  .chart b { flex: 1; background: #fff9; border-radius: 3px 3px 0 0; min-height: 2px; }
+  .chart b.top { background: #fff; }
+  .emoji { font-size: 84px; margin: 0; }
+  input { width: 100%; padding: 14px; border-radius: 14px; border: 0; font-size: 15px; }
+  button { padding: 14px 18px; border-radius: 14px; border: 0; font-size: 16px; font-weight: 800; cursor: pointer;
+           background: #fff; color: #111; }
+  .err { color: #ffb4b4; min-height: 1.2em; margin: 0; }
+  /* one gradient per slide */
+  .g0 { background: linear-gradient(160deg, #9945ff, #14f195); }
+  .g1 { background: linear-gradient(160deg, #ff3cac, #784ba0, #2b86c5); }
+  .g2 { background: linear-gradient(160deg, #f7971e, #ff4e50); }
+  .g3 { background: linear-gradient(160deg, #00c6ff, #0072ff); }
+  .g4 { background: linear-gradient(160deg, #1d1d4f, #6a3093); }
+  .g5 { background: linear-gradient(160deg, #e52d27, #b31217); }
+  .g6 { background: linear-gradient(160deg, #11998e, #38ef7d); }
+  .g7 { background: linear-gradient(160deg, #fc466b, #3f5efb); }
+  .g8 { background: linear-gradient(160deg, #f12711, #f5af19); }
+  .g9 { background: linear-gradient(160deg, #000000, #9945ff 60%, #14f195); }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <!-- START SCREEN: paste an address -->
+  <form class="slide on g0" id="start">
+    <p class="emoji">🎁</p>
+    <p class="big" style="font-size:44px">Solana Wrapped</p>
+    <p class="sub">Paste any Solana wallet address to see its story.</p>
+    <input id="addr" placeholder="Wallet address…" autocomplete="off" spellcheck="false" />
+    <button id="go">Wrap it 🎉</button>
+    <p class="err" id="status"></p>
+  </form>
+</div>
+
+<script type="module">
+  import { createSolanaRpc, address } from "https://esm.sh/@solana/kit@8.6.0";
+
+  // ── 1. CONNECT TO THE BLOCKCHAIN ─────────────────────────────────────────
+  // An "RPC" is just a public server you can ask questions about Solana.
+  // (Solana's own api.mainnet-beta server refuses requests from web pages, so we use PublicNode's free one.)
+  const rpc = createSolanaRpc("https://solana-rpc.publicnode.com");
+
+  // Known apps, so we can say "Jupiter" instead of a long program ID.
+  const APPS = {
+    JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4: "Jupiter 🪐",
+    "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8": "Raydium ⚡",
+    "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": "Pump.fun 💊",
+    whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc: "Orca 🐋",
+    LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo: "Meteora ☄️",
+    M2mx93ekt1fmXSVkTrUL9xVFHkmME8HTUi5Cyc5aF7K: "Magic Eden 🪄",
+    TSWAPaqyCSx2KABk68Shruf4rp7CxcNi8hAsbdwmHbN: "Tensor 🖼️",
+    metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s: "Metaplex 🎨",
+    "11111111111111111111111111111111": "Sending SOL 💸",
+    TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA: "Token transfers 🪙",
+    Stake11111111111111111111111111111111111111: "Staking 🥩",
+    Vote111111111111111111111111111111111111111: "Validator voting 🗳️",
+  };
+  const TRADING = ["JUP6Lk", "675kPX", "6EF8rr", "whirLb", "LBUZKh"];   // swap apps (prefix match)
+  const NFTS = ["M2mx93", "TSWAPa", "metaqb"];                          // NFT apps
+  const IGNORE = new Set([                                             // plumbing, not "apps"
+    "ComputeBudget111111111111111111111111111111",
+    "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  ]);
+
+  // ── 2. ASK THE BLOCKCHAIN WHAT THE WALLET DID ────────────────────────────
+  // getSignaturesForAddress = "list this wallet's transactions" (newest first, 1000 per page).
+  async function fetchHistory(owner) {
+    const all = [];
+    let before;
+    for (let page = 0; page < 3; page++) {                 // up to 3,000 transactions
+      const batch = await rpc.getSignaturesForAddress(owner, { limit: 1000, before }).send();
+      all.push(...batch);
+      if (batch.length < 1000) break;
+      before = batch[batch.length - 1].signature;
+    }
+    return all;
+  }
+
+  // getTransaction = "show me the details of one transaction" (which app, what fee).
+  // We only open the latest 15, to stay friendly with the free public server.
+  async function fetchDetails(sigs) {
+    const out = [];
+    const pick = sigs.slice(0, 15);
+    for (let i = 0; i < pick.length; i += 5) {
+      const chunk = await Promise.all(pick.slice(i, i + 5).map((s) =>
+        rpc.getTransaction(s.signature, { encoding: "jsonParsed", maxSupportedTransactionVersion: 1 })
+          .send().catch(() => null)));
+      out.push(...chunk.filter(Boolean));
+    }
+    return out;
+  }
+
+  // ── 3. COUNT THINGS UP ───────────────────────────────────────────────────
+  function crunch(sigs, txs, lamports) {
+    const times = sigs.filter((s) => s.blockTime != null).map((s) => new Date(Number(s.blockTime) * 1000));
+    const byDay = {};
+    const byHour = Array(24).fill(0);
+    for (const d of times) {
+      const day = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+      byDay[day] = (byDay[day] || 0) + 1;
+      byHour[d.getHours()]++;
+    }
+    const [busiestDay, busiestCount] = Object.entries(byDay).sort((a, b) => b[1] - a[1])[0] ?? ["—", 0];
+    const topHour = byHour.indexOf(Math.max(...byHour));
+    const nightTx = byHour[22] + byHour[23] + byHour.slice(0, 5).reduce((a, b) => a + b, 0);
+
+    // Which app shows up most in the detailed transactions? And what did fees cost?
+    const appCount = {};
+    let feeSum = 0;
+    for (const tx of txs) {
+      feeSum += Number(tx.meta?.fee ?? 0);
+      const used = new Set(tx.transaction.message.instructions.map((ix) => String(ix.programId)));
+      for (const id of used) if (!IGNORE.has(id)) appCount[id] = (appCount[id] || 0) + 1;
+    }
+    const [topAppId, topAppHits] = Object.entries(appCount).sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
+    const avgFee = txs.length ? feeSum / txs.length : 0;
+
+    return {
+      count: sigs.length,
+      capped: sigs.length >= 3000,
+      first: times.at(-1),
+      busiestDay, busiestCount, byHour, topHour,
+      nightShare: times.length ? nightTx / times.length : 0,
+      failRate: sigs.length ? sigs.filter((s) => s.err).length / sigs.length : 0,
+      topAppId, topAppHits, sampled: txs.length,
+      topApp: APPS[topAppId] ?? (topAppId ? topAppId.slice(0, 4) + "…" + topAppId.slice(-4) : "—"),
+      feesSol: (avgFee * sigs.length) / 1e9,               // estimate: average fee × number of tx
+      balanceSol: Number(lamports) / 1e9,                  // 1 SOL = 1,000,000,000 lamports
+    };
+  }
+
+  // Simple rules → a fun label.
+  function personality(s) {
+    const is = (list) => list.some((p) => s.topAppId.startsWith(p));
+    if (s.count < 20) return ["💎", "Diamond Hands", "You barely move. Patience is a strategy."];
+    if (is(TRADING) && s.count >= 200) return ["🎰", "Degen Trader", "Swap first, ask questions never."];
+    if (s.nightShare > 0.4) return ["🦉", "Night Owl", "The blockchain never sleeps. Neither do you."];
+    if (s.failRate > 0.15) return ["😤", "Rage Clicker", "Failed? Click it again. And again."];
+    if (is(NFTS)) return ["🖼️", "Collector", "Your wallet is basically a museum."];
+    return ["🧱", "Steady Builder", "Calm, consistent, always on-chain."];
+  }
+
+  // ── 4. TURN THE NUMBERS INTO STORY SLIDES ────────────────────────────────
+  const esc = (t) => String(t).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+  const hourName = (h) => new Date(2000, 0, 1, h).toLocaleTimeString([], { hour: "numeric" });
+  const count = (n) => `<p class="big" data-count="${n}">0</p>`;  // number that counts up
+
+  function buildSlides(s, who) {
+    const [emoji, title, line] = personality(s);
+    const max = Math.max(...s.byHour, 1);
+    const chart = s.byHour.map((n, h) =>
+      `<b class="${h === s.topHour ? "top" : ""}" style="height:${(n / max) * 100}%"></b>`).join("");
+    const vibe = s.topHour < 5 ? "Night owl hours 🌙" : s.topHour < 9 ? "Early bird 🐦"
+               : s.topHour < 17 ? "Trading on the clock? 👀" : "Evening grinder 🌆";
+    const pct = Math.round(s.failRate * 100);
+
+    return [
+      `<p class="emoji">🎁</p><p class="big" style="font-size:42px">Your Solana Wrapped is here</p>
+       <p class="sub">${esc(who.slice(0, 4))}…${esc(who.slice(-4))}</p>`,
+      `<p class="kicker">You made</p>${count(s.count)}<p class="sub">transactions${s.capped ? " (we stopped counting at 3,000, you're busy)" : ""}.</p>`,
+      s.first ? `<p class="kicker">Your first move we found was on</p>
+       <p class="big" style="font-size:40px">${s.first.toLocaleDateString(undefined, { dateStyle: "long" })}</p>
+       <p class="sub">at ${s.first.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}${s.first.getHours() < 5 ? "… couldn't sleep? 😴" : ""}</p>` : null,
+      `<p class="kicker">Your busiest day</p><p class="big" style="font-size:40px">${esc(s.busiestDay)}</p>
+       <p class="sub">${s.busiestCount} transactions in one day. What happened? 👀</p>`,
+      `<p class="kicker">You're most active around</p><p class="big">${hourName(s.topHour)}</p>
+       <div class="chart">${chart}</div><p class="sub">${vibe}</p>`,
+      `<p class="kicker">Failed transactions</p>${count(pct)}<p class="sub">percent. ${pct > 15 ? "Rage clicker? 😤" : "Smooth operator 😎"}</p>`,
+      s.sampled ? `<p class="kicker">Your favorite app lately</p><p class="big" style="font-size:44px">${esc(s.topApp)}</p>
+       <p class="sub">in ${s.topAppHits} of your last ${s.sampled} transactions.</p>` : null,
+      s.sampled ? `<p class="kicker">You spent about</p><p class="big">${s.feesSol.toFixed(4)}</p>
+       <p class="sub">SOL in fees. For ${s.count.toLocaleString()} transactions. Banks could never. 🏦</p>` : null,
+      `<p class="kicker">Right now you hold</p><p class="big">${s.balanceSol.toLocaleString(undefined, { maximumFractionDigits: 3 })}</p><p class="sub">SOL</p>`,
+      `<p class="kicker">Your Solana personality</p><p class="emoji">${emoji}</p>
+       <p class="big" style="font-size:48px">${title}</p><p class="sub">${line}</p>
+       <p class="sub" style="opacity:.7">📸 Screenshot this and share it.</p>
+       <button onclick="location.reload()">Wrap another wallet</button>`,
+    ].filter(Boolean);
+  }
+
+  // ── 5. SLIDESHOW: tap right = next, tap left = back (or arrow keys) ──────
+  const stage = document.getElementById("stage");
+  let slides = [], at = 0;
+
+  function show(i) {
+    at = Math.max(0, Math.min(i, slides.length - 1));
+    slides.forEach((el, k) => el.classList.toggle("on", k === at));
+    stage.querySelectorAll(".bars i").forEach((b, k) => b.classList.toggle("done", k <= at));
+    for (const el of slides[at].querySelectorAll("[data-count]")) {     // count-up animation
+      const target = Number(el.dataset.count), t0 = performance.now();
+      const tick = (t) => {
+        const p = Math.min(1, (t - t0) / 1000);
+        el.textContent = Math.round(target * (1 - (1 - p) ** 3)).toLocaleString();
+        if (p < 1) requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    }
+  }
+
+  function play(htmlSlides) {
+    stage.innerHTML = `<div class="bars">${htmlSlides.map(() => "<i></i>").join("")}</div>`;
+    slides = htmlSlides.map((html, k) => {
+      const el = document.createElement("section");
+      el.className = `slide g${k % 10}`;
+      el.innerHTML = html + (k < htmlSlides.length - 1 ? `<p class="hint">tap to continue →</p>` : "");
+      stage.appendChild(el);
+      return el;
+    });
+    stage.onclick = (e) => {
+      if (e.target.closest("button")) return;
+      const r = stage.getBoundingClientRect();
+      show(at + (e.clientX - r.left < r.width / 3 ? -1 : 1));
+    };
+    document.onkeydown = (e) => e.key === "ArrowRight" ? show(at + 1) : e.key === "ArrowLeft" && show(at - 1);
+    show(0);
+  }
+
+  // ── 6. WIRE UP THE START BUTTON ──────────────────────────────────────────
+  const status = document.getElementById("status");
+  const input = document.getElementById("addr");
+
+  async function run(raw) {
+    let owner;
+    try { owner = address(raw.trim()); }                    // validates it's a real Solana address
+    catch { status.textContent = "That doesn't look like a Solana address."; return; }
+
+    try {
+      status.textContent = "Reading the blockchain… ⛓️";
+      const [sigs, bal] = await Promise.all([fetchHistory(owner), rpc.getBalance(owner).send()]);
+      if (!sigs.length) { status.textContent = "No activity found for this wallet."; return; }
+      status.textContent = `Found ${sigs.length.toLocaleString()} transactions. Opening the latest few… 🔍`;
+      const txs = await fetchDetails(sigs);
+      history.replaceState(null, "", `?address=${owner}`);   // shareable link
+      play(buildSlides(crunch(sigs, txs, bal.value), owner));
+    } catch (err) {
+      console.error(err);
+      status.textContent = "The free Solana server is busy. Wait a few seconds and try again.";
+    }
+  }
+
+  document.getElementById("start").onsubmit = (e) => { e.preventDefault(); run(input.value); };
+  const fromUrl = new URLSearchParams(location.search).get("address");
+  if (fromUrl) { input.value = fromUrl; run(fromUrl); }
+</script>
+</body>
+</html>
